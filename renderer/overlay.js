@@ -7,6 +7,20 @@
 
 "use strict";
 
+// ─── Crash Debugging Hooks ───────────────────────────────────────────────────
+window.onerror = function(msg, src, line, col, err) {
+  document.title = `ERROR: ${msg} (line ${line})`;
+  console.error('FATAL:', msg, 'at line', line, src);
+  alert(`JS Error: ${msg}\nLine: ${line}\nSource: ${src}`);
+  return true; // prevent default crash
+};
+
+window.onunhandledrejection = function(event) {
+  document.title = `PROMISE ERROR: ${event.reason}`;
+  console.error('Unhandled promise rejection:', event.reason);
+  alert(`Promise Error: ${event.reason}`);
+};
+
 // ─── State ────────────────────────────────────────────────────────────────────
 const state = {
   settings: {},
