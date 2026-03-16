@@ -91,16 +91,12 @@ async function startAudioCapture() {
       if (sourceId) {
         stream = await navigator.mediaDevices.getUserMedia({
           audio: {
-            mandatory: {
-              chromeMediaSource: "desktop",
-              chromeMediaSourceId: sourceId,
-            }
+            chromeMediaSource: 'desktop',
+            chromeMediaSourceId: sourceId,
           },
           video: {
-            mandatory: {
-              chromeMediaSource: "desktop",
-              chromeMediaSourceId: sourceId,
-            }
+            chromeMediaSource: 'desktop',
+            chromeMediaSourceId: sourceId,
           }
         });
         // Stop video tracks — we only want audio
