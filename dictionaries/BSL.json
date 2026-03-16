@@ -1,0 +1,19 @@
+{
+  "_meta": {
+    "language": "BSL",
+    "version": "0.1.0",
+    "description": "British Sign Language dictionary (placeholder). Add clip paths as clips/BSL/*.mp4 files are added.",
+    "clip_format": "mp4",
+    "base_path": "clips/BSL/"
+  },
+  "hello":    "clips/BSL/hello.mp4",
+  "thank":    "clips/BSL/thank_you.mp4",
+  "yes":      "clips/BSL/yes.mp4",
+  "no":       "clips/BSL/no.mp4",
+  "please":   "clips/BSL/please.mp4",
+  "sorry":    "clips/BSL/sorry.mp4",
+  "help":     "clips/BSL/help.mp4",
+  "love":     "clips/BSL/love.mp4",
+  "good":     "clips/BSL/good.mp4",
+  "bad":      "clips/BSL/bad.mp4"
+}

@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' file:; script-src 'self'; style-src 'self' 'unsafe-inline'; media-src file: blob:;" />
+  <title>SignBridge</title>
+  <link rel="stylesheet" href="overlay.css" />
+</head>
+<body>
+  <div id="app">
+
+    <!-- ── Title / drag bar ──────────────────────────────────────────── -->
+    <div id="title-bar">
+      <!-- Minimal SVG logo -->
+      <svg class="title-logo" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="10" cy="10" r="9" stroke="#00e5b0" stroke-width="1.5"/>
+        <path d="M7 13 C7 10 9 8 10 7 C11 8 13 10 13 13" stroke="#00e5b0" stroke-width="1.5"
+              stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <circle cx="10" cy="5.5" r="1.2" fill="#00e5b0"/>
+      </svg>
+
+      <span class="title-text">SignBridge</span>
+
+      <!-- Live status indicator -->
+      <span id="status-dot" class="status-dot" title="Whisper status"></span>
+
+      <!-- Control buttons (no-drag zone) -->
+      <div class="bar-buttons">
+        <button class="bar-btn" id="btn-settings" title="Settings">⚙</button>
+        <button class="bar-btn" id="btn-audio" title="Toggle audio capture">▶</button>
+        <button class="bar-btn danger" id="btn-hide" title="Hide overlay (live in tray)">—</button>
+        <button class="bar-btn danger" id="btn-close" title="Quit app">✕</button>
+      </div>
+    </div>
+
+    <!-- ── Sign display area ─────────────────────────────────────────── -->
+    <div id="sign-area">
+      <!-- Queue dots (up to 5 queued signs) -->
+      <div id="queue-indicator"></div>
+
+      <!-- Sign video player -->
+      <video id="sign-video" playsinline></video>
+
+      <!-- Unknown word badge -->
+      <div id="unknown-word">No sign found</div>
+
+      <!-- Idle placeholder avatar (SVG cartoon hands) -->
+      <div id="avatar-placeholder">
+        <svg class="avatar-svg" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <!-- Body -->
+          <ellipse cx="50" cy="78" rx="18" ry="10" fill="rgba(0,229,176,0.08)" stroke="rgba(0,229,176,0.2)" stroke-width="1"/>
+          <!-- Torso -->
+          <rect x="38" y="52" width="24" height="26" rx="6" fill="rgba(0,229,176,0.12)" stroke="rgba(0,229,176,0.3)" stroke-width="1.2"/>
+          <!-- Head -->
+          <circle cx="50" cy="38" r="14" fill="rgba(0,229,176,0.10)" stroke="rgba(0,229,176,0.35)" stroke-width="1.5"/>
+          <!-- Eyes -->
+          <circle cx="45" cy="36" r="2" fill="rgba(0,229,176,0.6)"/>
+          <circle cx="55" cy="36" r="2" fill="rgba(0,229,176,0.6)"/>
+          <!-- Smile -->
+          <path d="M45 42 Q50 46 55 42" stroke="rgba(0,229,176,0.6)" stroke-width="1.5" stroke-linecap="round" fill="none"/>
+          <!-- Left arm / hand -->
+          <path d="M38 60 Q28 62 26 70" stroke="rgba(0,229,176,0.4)" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <circle cx="26" cy="71" r="5" fill="rgba(0,229,176,0.12)" stroke="rgba(0,229,176,0.35)" stroke-width="1.2"/>
+          <!-- Right arm / hand -->
+          <path d="M62 60 Q72 62 74 70" stroke="rgba(0,229,176,0.4)" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <circle cx="74" cy="71" r="5" fill="rgba(0,229,176,0.12)" stroke="rgba(0,229,176,0.35)" stroke-width="1.2"/>
+        </svg>
+        <p class="placeholder-text">Listening for speech…<br/>Signs will appear here.</p>
+      </div>
+
+      <!-- Current sign subtitle -->
+      <div id="subtitle"></div>
+    </div>
+
+    <!-- ── Transcription strip ───────────────────────────────────────── -->
+    <div id="transcript-strip">
+      <div id="transcript-text">Waiting for audio…</div>
+    </div>
+
+    <!-- ── Settings panel (slides up) ───────────────────────────────── -->
+    <div id="settings-panel">
+      <div class="settings-title">Settings</div>
+      <div class="settings-group">
+
+        <div class="settings-row">
+          <span class="settings-label">Sign Language</span>
+          <select id="set-language">
+            <option value="ISL">ISL (Indian)</option>
+            <option value="ASL">ASL (American)</option>
+            <option value="BSL">BSL (British)</option>
+          </select>
+        </div>
+
+        <div class="settings-row">
+          <span class="settings-label">Overlay Size</span>
+          <select id="set-size">
+            <option value="small">Small</option>
+            <option value="medium">Medium</option>
+            <option value="large">Large</option>
+          </select>
+        </div>
+
+        <div class="settings-row">
+          <span class="settings-label">Opacity</span>
+          <input type="range" id="set-opacity" min="0.3" max="1" step="0.05" value="0.92" />
+        </div>
+
+        <div class="settings-row">
+          <span class="settings-label">Sign Speed</span>
+          <select id="set-speed">
+            <option value="0.5">0.5×</option>
+            <option value="1" selected>1×</option>
+            <option value="1.5">1.5×</option>
+            <option value="2">2×</option>
+          </select>
+        </div>
+
+        <div class="settings-row">
+          <span class="settings-label">Show subtitles</span>
+          <label class="toggle-wrap">
+            <input type="checkbox" id="set-subtitles" checked />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+      </div>
+
+      <button class="settings-save-btn" id="btn-save-settings">Save &amp; Close</button>
+    </div>
+
+    <!-- ── Error toast ───────────────────────────────────────────────── -->
+    <div id="error-toast"></div>
+
+  </div><!-- /#app -->
+
+  <script src="overlay.js"></script>
+</body>
+</html>

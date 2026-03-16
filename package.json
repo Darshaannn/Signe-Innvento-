@@ -1,0 +1,79 @@
+{
+  "name": "signbridge",
+  "version": "1.0.0",
+  "description": "Real-time sign language overlay desktop app for deaf-mute individuals",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron --no-sandbox --disable-gpu .",
+    "dev": "electron --no-sandbox --disable-gpu . --dev",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "keywords": [
+    "sign-language",
+    "accessibility",
+    "overlay",
+    "deaf",
+    "ISL",
+    "ASL"
+  ],
+  "author": "SignBridge",
+  "license": "MIT",
+  "dependencies": {
+    "electron-store": "^8.1.0",
+    "node-record-lpcm16": "^1.0.1"
+  },
+  "devDependencies": {
+    "electron": "^28.3.3",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.signbridge.app",
+    "productName": "SignBridge",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "dictionaries/**/*",
+      "clips/**/*",
+      "assets/**/*"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "icon": "assets/icon.icns",
+      "category": "public.app-category.utilities"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "assets/icon.png",
+      "category": "Utility"
+    },
+    "extraResources": [
+      {
+        "from": "clips/",
+        "to": "clips/"
+      },
+      {
+        "from": "dictionaries/",
+        "to": "dictionaries/"
+      }
+    ]
+  }
+}

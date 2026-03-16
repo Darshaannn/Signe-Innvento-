@@ -1,0 +1,19 @@
+{
+  "_meta": {
+    "language": "ASL",
+    "version": "0.1.0",
+    "description": "American Sign Language dictionary (placeholder). Add clip paths as clips/ASL/*.mp4 files are added.",
+    "clip_format": "mp4",
+    "base_path": "clips/ASL/"
+  },
+  "hello":    "clips/ASL/hello.mp4",
+  "thank":    "clips/ASL/thank_you.mp4",
+  "yes":      "clips/ASL/yes.mp4",
+  "no":       "clips/ASL/no.mp4",
+  "please":   "clips/ASL/please.mp4",
+  "sorry":    "clips/ASL/sorry.mp4",
+  "help":     "clips/ASL/help.mp4",
+  "love":     "clips/ASL/love.mp4",
+  "good":     "clips/ASL/good.mp4",
+  "bad":      "clips/ASL/bad.mp4"
+}
