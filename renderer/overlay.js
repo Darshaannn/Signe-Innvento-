@@ -82,35 +82,50 @@ async function loadDictionary(language) {
 // ─── Audio capture ────────────────────────────────────────────────────────────
 async function startAudioCapture() {
   try {
-    let streamConstraints;
+    let stream;
+
+    // Try desktop loopback first, fall back to mic
     try {
       const sourceId = await window.signBridge.getDesktopAudioSource();
-      streamConstraints = sourceId
-        ? {
-          audio: { mandatory: { chromeMediaSource: "desktop", chromeMediaSourceId: sourceId } },
-          video: { mandatory: { chromeMediaSource: "desktop", chromeMediaSourceId: sourceId } },
-        }
-        : { audio: true, video: false };
-    } catch (e) {
-      // Fall back to mic if desktop source fails
-      streamConstraints = { audio: true, video: false };
-      showError("Desktop audio unavailable — using microphone instead.");
+
+      if (sourceId) {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            mandatory: {
+              chromeMediaSource: "desktop",
+              chromeMediaSourceId: sourceId,
+            }
+          },
+          video: {
+            mandatory: {
+              chromeMediaSource: "desktop",
+              chromeMediaSourceId: sourceId,
+            }
+          }
+        });
+        // Stop video tracks — we only want audio
+        stream.getVideoTracks().forEach((t) => t.stop());
+      } else {
+        throw new Error("No desktop source ID");
+      }
+    } catch (desktopErr) {
+      console.warn("[SignBridge] Desktop capture failed, falling back to mic:", desktopErr.message);
+      // FALLBACK — just use microphone
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: false
+      });
     }
 
-    state.audioStream = await navigator.mediaDevices.getUserMedia(streamConstraints);
-
-    // Mute any video tracks we captured (we only want audio)
-    state.audioStream.getVideoTracks().forEach((t) => t.stop());
-
+    state.audioStream = stream;
     state.audioContext = new AudioContext({ sampleRate: 16000 });
-    const source = state.audioContext.createMediaStreamSource(state.audioStream);
+    const source = state.audioContext.createMediaStreamSource(stream);
 
-    // ScriptProcessorNode collects ~2 second chunks (2s × 16000 = 32000 samples)
     const BUFFER_SIZE = 4096;
     state.processor = state.audioContext.createScriptProcessor(BUFFER_SIZE, 1, 1);
 
     let pcmBuffer = new Float32Array(0);
-    const CHUNK_SAMPLES = 16000 * 2; // 2 seconds
+    const CHUNK_SAMPLES = 16000 * 2;
 
     state.processor.onaudioprocess = (e) => {
       const channelData = e.inputBuffer.getChannelData(0);
@@ -136,10 +151,13 @@ async function startAudioCapture() {
     transcriptText.textContent = "Listening…";
 
     console.log("[SignBridge] Audio capture started.");
+
   } catch (err) {
+    // NEVER let this crash the app — always catch
     console.error("[SignBridge] Audio capture error:", err);
-    showError(`Audio capture failed: ${err.message}. Make sure a virtual audio loopback device is installed.`);
+    showError(`Audio error: ${err.message}`);
     setStatus("error");
+    state.isCapturing = false;
   }
 }
 
