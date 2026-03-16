@@ -95,14 +95,18 @@ async function loadDictionary(language) {
 
 // ─── Audio capture ────────────────────────────────────────────────────────────
 async function startAudioCapture() {
+  console.log("[SignBridge/Debug] Milestone 1: startAudioCapture called");
   try {
     let stream;
 
     // Try desktop loopback first, fall back to mic
     try {
+      console.log("[SignBridge/Debug] Milestone 2: Requesting desktop source ID");
       const sourceId = await window.signBridge.getDesktopAudioSource();
+      console.log("[SignBridge/Debug] Milestone 3: Received sourceId:", sourceId);
 
       if (sourceId) {
+        console.log("[SignBridge/Debug] Milestone 4: Requesting getUserMedia (Desktop)");
         stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             chromeMediaSource: 'desktop',
@@ -113,6 +117,7 @@ async function startAudioCapture() {
             chromeMediaSourceId: sourceId,
           }
         });
+        console.log("[SignBridge/Debug] Milestone 5: getUserMedia (Desktop) success");
         // Stop video tracks — we only want audio
         stream.getVideoTracks().forEach((t) => t.stop());
       } else {
@@ -120,17 +125,21 @@ async function startAudioCapture() {
       }
     } catch (desktopErr) {
       console.warn("[SignBridge] Desktop capture failed, falling back to mic:", desktopErr.message);
+      console.log("[SignBridge/Debug] Milestone 6: Requesting getUserMedia (Mic fallback)");
       // FALLBACK — just use microphone
       stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
         video: false
       });
+      console.log("[SignBridge/Debug] Milestone 7: getUserMedia (Mic) success");
     }
 
+    console.log("[SignBridge/Debug] Milestone 8: Initializing AudioContext");
     state.audioStream = stream;
     state.audioContext = new AudioContext({ sampleRate: 16000 });
     const source = state.audioContext.createMediaStreamSource(stream);
 
+    console.log("[SignBridge/Debug] Milestone 9: Creating ScriptProcessor");
     const BUFFER_SIZE = 4096;
     state.processor = state.audioContext.createScriptProcessor(BUFFER_SIZE, 1, 1);
 
@@ -151,7 +160,15 @@ async function startAudioCapture() {
       }
     };
 
+    console.log("[SignBridge/Debug] Milestone 10: Connecting processor");
     source.connect(state.processor);
+    state.processor.connect(state.audioContext.destination);
+    console.log("[SignBridge/Debug] Milestone 11: Audio pipeline complete");
+  } catch (err) {
+    console.error("[SignBridge] FATAL capture error:", err);
+    showErrorToast(`Audio capture failed: ${err.message}`);
+  }
+}
     state.processor.connect(state.audioContext.destination);
 
     state.isCapturing = true;

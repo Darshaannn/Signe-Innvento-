@@ -6,18 +6,11 @@
 
 const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, systemPreferences, desktopCapturer, session } = require('electron')
 
-// ─── MUST BE AT THE VERY TOP BEFORE ANYTHING ELSE ──────────────────────────
+// ─── SAFE MODE: MINIMAL FLAGS ───────────────────────────────────────────────
 app.disableHardwareAcceleration()
 app.commandLine.appendSwitch('no-sandbox')
 app.commandLine.appendSwitch('disable-gpu')
-app.commandLine.appendSwitch('disable-gpu-compositing')
-app.commandLine.appendSwitch('disable-gpu-rasterization')
-app.commandLine.appendSwitch('disable-gpu-sandbox')
 app.commandLine.appendSwitch('disable-software-rasterizer')
-app.commandLine.appendSwitch('disable-webgl')
-app.commandLine.appendSwitch('disable-webgl2')
-app.commandLine.appendSwitch('in-process-gpu')
-app.commandLine.appendSwitch('use-gl', 'swiftshader')
 
 const os = require('os')
 const path = require('path')
@@ -31,7 +24,7 @@ const Store = require('electron-store')
 // ─── Persistence ────────────────────────────────────────────────────────────
 const store = new Store({
   defaults: {
-    overlayOpacity: 0.92,
+    overlayOpacity: 1.0, 
     overlaySize: 'medium',
     signLanguage: 'ISL',
     avatarSpeed: 1,
@@ -67,12 +60,12 @@ function createOverlayWindow() {
     height: size.height,
     minWidth: 220,
     minHeight: 260,
-    transparent: true,
-    frame: false,
+    transparent: false, // SAFE MODE: No transparency
+    frame: true,       // SAFE MODE: Standard frame
     resizable: true,
     alwaysOnTop: true,
-    skipTaskbar: true,
-    hasShadow: false,
+    skipTaskbar: false, // SAFE MODE: Show in taskbar
+    hasShadow: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -81,27 +74,22 @@ function createOverlayWindow() {
     },
   })
 
-  overlayWindow.setAlwaysOnTop(true, 'screen-saver')
-  overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   overlayWindow.loadFile(path.join(__dirname, 'renderer', 'overlay.html'))
 
-  // ─── Crash recovery ──────────────────────────────────────────────────────
+  // ─── Crash recovery (Slower loop for debugging) ──────────────────────────
   overlayWindow.webContents.on('render-process-gone', (event, details) => {
-    console.error(`[CRASH] Renderer process gone: ${details.reason} (code: ${details.exitCode})`)
-    // Auto-recover after 1 second
+    console.error(`[CRASH] Renderer process gone (Safe Mode): ${details.reason} (code: ${details.exitCode})`)
+    // Longer recovery timeout to give user time to read terminal
     setTimeout(() => {
       if (overlayWindow && !overlayWindow.isDestroyed()) {
-        console.log('[SignBridge] Attempting renderer recovery...')
+        console.log('[SignBridge] Attempting renderer recovery (5s delay)...')
         overlayWindow.reload()
       }
-    }, 1000)
+    }, 5000)
   })
 
   overlayWindow.on('unresponsive', () => {
-    console.warn('[SignBridge] Renderer became unresponsive — reloading')
-    if (overlayWindow && !overlayWindow.isDestroyed()) {
-      overlayWindow.reload()
-    }
+    console.warn('[SignBridge] Renderer unresponsive — manual reload recommended')
   })
 
   overlayWindow.on('moved', saveBounds)
@@ -172,7 +160,7 @@ function startWhisperProcess() {
         if (overlayWindow && !overlayWindow.isDestroyed()) {
           overlayWindow.webContents.send('transcription', result)
         }
-      } catch (e) { /* ignore non-JSON startup messages */ }
+      } catch (e) { }
     })
 
     whisperProcess.stderr.on('data', (data) => {
@@ -182,7 +170,6 @@ function startWhisperProcess() {
     whisperProcess.on('close', (code) => {
       console.log('[Whisper] exited with code:', code)
       whisperProcess = null
-      // Never quit the app when Python exits
     })
 
     whisperProcess.on('error', (err) => {
@@ -217,7 +204,7 @@ ipcMain.on('audio-chunk', (_event, buffer) => {
 })
 
 ipcMain.handle('get-settings', () => ({
-  overlayOpacity:  store.get('overlayOpacity'),
+  overlayOpacity:  1.0,
   overlaySize:     store.get('overlaySize'),
   signLanguage:    store.get('signLanguage'),
   avatarSpeed:     store.get('avatarSpeed'),
@@ -228,7 +215,6 @@ ipcMain.handle('save-settings', (_event, settings) => {
   try {
     store.set(settings)
     if (overlayWindow) {
-      if (settings.overlayOpacity !== undefined) overlayWindow.setOpacity(settings.overlayOpacity)
       if (settings.overlaySize) {
         const s = SIZES[settings.overlaySize] || SIZES.medium
         overlayWindow.setSize(s.width, s.height)
@@ -274,15 +260,10 @@ ipcMain.on('stop-whisper',   () => stopWhisperProcess())
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 app.on('ready', async () => {
   try {
-    // macOS microphone permission
     if (process.platform === 'darwin') {
       const granted = await systemPreferences.askForMediaAccess('microphone')
       if (!granted) console.warn('[SignBridge] Microphone access denied.')
     }
-
-    // FIX: Removed setDisplayMediaRequestHandler with loopback audio
-    // — that was crashing the renderer on Windows 10.
-    // Audio capture is handled directly in overlay.js via getUserMedia fallback.
 
     createOverlayWindow()
     createTray()
@@ -297,11 +278,7 @@ app.on('before-quit', () => {
   stopWhisperProcess()
 })
 
-// FIX: Removed e.preventDefault() — window-all-closed is not cancellable.
-// Instead we just don't call app.quit() so the tray keeps the app alive.
-app.on('window-all-closed', () => {
-  // Do nothing — tray keeps app alive
-})
+app.on('window-all-closed', () => { })
 
 app.on('activate', () => {
   if (!overlayWindow) createOverlayWindow()
