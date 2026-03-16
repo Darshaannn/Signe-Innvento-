@@ -164,27 +164,17 @@ async function startAudioCapture() {
     source.connect(state.processor);
     state.processor.connect(state.audioContext.destination);
     console.log("[SignBridge/Debug] Milestone 11: Audio pipeline complete");
-  } catch (err) {
-    console.error("[SignBridge] FATAL capture error:", err);
-    showErrorToast(`Audio capture failed: ${err.message}`);
-  }
-}
-    state.processor.connect(state.audioContext.destination);
 
     state.isCapturing = true;
     setStatus("active");
-    $("btn-audio").textContent = "⏸";
-    $("btn-audio").title = "Stop audio capture";
-    transcriptText.textContent = "Listening…";
+    document.getElementById("btn-audio").textContent = "⏸";
+    document.getElementById("btn-audio").title = "Stop audio capture";
+    document.getElementById("transcript-text").textContent = "Listening…";
 
     console.log("[SignBridge] Audio capture started.");
-
   } catch (err) {
-    // NEVER let this crash the app — always catch
-    console.error("[SignBridge] Audio capture error:", err);
-    showError(`Audio error: ${err.message}`);
-    setStatus("error");
-    state.isCapturing = false;
+    console.error("[SignBridge] FATAL capture error:", err);
+    showErrorToast(`Audio capture failed: ${err.message}`);
   }
 }
 
