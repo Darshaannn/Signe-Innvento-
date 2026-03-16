@@ -6,18 +6,19 @@
 
 const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, systemPreferences, desktopCapturer, session } = require('electron')
 
-// ─── EXTREME STABILITY: MUST BE AT THE VERY TOP ────────────────────────────
-// Disable HW acceleration entirely to prevent GPU-related crashes.
+// ─── MUST BE AT THE VERY TOP BEFORE ANYTHING ELSE ──────────────────────────
 app.disableHardwareAcceleration()
-
-// silence Chromium cache / GPU noise early
 app.commandLine.appendSwitch('no-sandbox')
 app.commandLine.appendSwitch('disable-gpu')
-app.commandLine.appendSwitch('disable-software-rasterizer')
 app.commandLine.appendSwitch('disable-gpu-compositing')
-app.commandLine.appendSwitch('disable-gpu-shader-disk-cache')
+app.commandLine.appendSwitch('disable-gpu-rasterization')
+app.commandLine.appendSwitch('disable-gpu-sandbox')
+app.commandLine.appendSwitch('disable-software-rasterizer')
+app.commandLine.appendSwitch('disable-webgl')
+app.commandLine.appendSwitch('disable-webgl2')
+app.commandLine.appendSwitch('in-process-gpu')
+app.commandLine.appendSwitch('use-gl', 'swiftshader')
 
-// Point the disk cache to a writable temp location to avoid "Access is denied"
 const os = require('os')
 const path = require('path')
 const tmpCache = path.join(os.tmpdir(), 'signbridge-cache')
@@ -48,9 +49,9 @@ const isDev = process.argv.includes('--dev')
 
 // ─── Overlay window sizes ────────────────────────────────────────────────────
 const SIZES = {
-  small: { width: 280, height: 320 },
+  small:  { width: 280, height: 320 },
   medium: { width: 380, height: 420 },
-  large: { width: 500, height: 560 },
+  large:  { width: 500, height: 560 },
 }
 
 // ─── Create the floating overlay window ─────────────────────────────────────
@@ -70,7 +71,6 @@ function createOverlayWindow() {
     frame: false,
     resizable: true,
     alwaysOnTop: true,
-    alwaysOnTopLevel: 'screen-saver',
     skipTaskbar: true,
     hasShadow: false,
     webPreferences: {
@@ -81,28 +81,32 @@ function createOverlayWindow() {
     },
   })
 
-  // Stay above fullscreen apps
   overlayWindow.setAlwaysOnTop(true, 'screen-saver')
   overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
-
   overlayWindow.loadFile(path.join(__dirname, 'renderer', 'overlay.html'))
 
-  // ─── Crash Monitoring ─────────────────────────────────────────────────────
+  // ─── Crash recovery ──────────────────────────────────────────────────────
   overlayWindow.webContents.on('render-process-gone', (event, details) => {
-    console.error(`[CRASH] Renderer process gone: ${details.reason}`, details)
+    console.error(`[CRASH] Renderer process gone: ${details.reason} (code: ${details.exitCode})`)
+    // Auto-recover after 1 second
+    setTimeout(() => {
+      if (overlayWindow && !overlayWindow.isDestroyed()) {
+        console.log('[SignBridge] Attempting renderer recovery...')
+        overlayWindow.reload()
+      }
+    }, 1000)
   })
 
   overlayWindow.on('unresponsive', () => {
-    console.warn('[CRASH] Renderer process became unresponsive.')
+    console.warn('[SignBridge] Renderer became unresponsive — reloading')
+    if (overlayWindow && !overlayWindow.isDestroyed()) {
+      overlayWindow.reload()
+    }
   })
 
-  // Persist window position/size on move or resize
   overlayWindow.on('moved', saveBounds)
   overlayWindow.on('resized', saveBounds)
-
-  overlayWindow.on('closed', () => {
-    overlayWindow = null
-  })
+  overlayWindow.on('closed', () => { overlayWindow = null })
 
   if (isDev) {
     overlayWindow.webContents.openDevTools({ mode: 'detach' })
@@ -112,29 +116,24 @@ function createOverlayWindow() {
 function saveBounds() {
   if (!overlayWindow) return
   try {
-    const b = overlayWindow.getBounds()
-    store.set('windowBounds', b)
+    store.set('windowBounds', overlayWindow.getBounds())
   } catch (e) {
-    console.error('[SignBridge] Failed to save window bounds:', e)
+    console.error('[SignBridge] Failed to save bounds:', e)
   }
 }
 
-// ─── Tray icon ───────────────────────────────────────────────────────────────
+// ─── Tray ────────────────────────────────────────────────────────────────────
 function createTray() {
   try {
     const iconPath = path.join(__dirname, 'assets', 'tray-icon.png')
-    let trayIcon
-    if (fs.existsSync(iconPath)) {
-      trayIcon = nativeImage.createFromPath(iconPath)
-    } else {
-      trayIcon = nativeImage.createEmpty()
-    }
+    const trayIcon = fs.existsSync(iconPath)
+      ? nativeImage.createFromPath(iconPath)
+      : nativeImage.createEmpty()
 
     tray = new Tray(trayIcon)
     tray.setToolTip('SignBridge — Sign Language Overlay')
     updateTrayMenu()
-
-    tray.on('double-click', () => toggleOverlay())
+    tray.on('double-click', toggleOverlay)
   } catch (e) {
     console.error('[SignBridge] Failed to create tray:', e)
   }
@@ -142,65 +141,30 @@ function createTray() {
 
 function updateTrayMenu() {
   if (!tray) return
-  try {
-    const menu = Menu.buildFromTemplate([
-      {
-        label: isOverlayVisible ? 'Hide Overlay' : 'Show Overlay',
-        click: () => toggleOverlay(),
-      },
-      {
-        label: 'Settings',
-        click: () => {
-          if (overlayWindow) {
-            overlayWindow.webContents.send('open-settings')
-            showOverlay()
-          }
-        },
-      },
-      { type: 'separator' },
-      {
-        label: 'Quit SignBridge',
-        click: () => app.quit(),
-      },
-    ])
-    tray.setContextMenu(menu)
-  } catch (e) {
-    console.error('[SignBridge] Failed to update tray menu:', e)
-  }
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: isOverlayVisible ? 'Hide Overlay' : 'Show Overlay', click: toggleOverlay },
+    { label: 'Settings', click: () => { if (overlayWindow) { showOverlay(); overlayWindow.webContents.send('open-settings') } } },
+    { type: 'separator' },
+    { label: 'Quit SignBridge', click: () => app.quit() },
+  ]))
 }
 
-function toggleOverlay() {
-  if (isOverlayVisible) hideOverlay()
-  else showOverlay()
-}
+function toggleOverlay() { isOverlayVisible ? hideOverlay() : showOverlay() }
+function showOverlay()   { if (!overlayWindow) createOverlayWindow(); overlayWindow.show(); isOverlayVisible = true; updateTrayMenu() }
+function hideOverlay()   { if (overlayWindow) overlayWindow.hide(); isOverlayVisible = false; updateTrayMenu() }
 
-function showOverlay() {
-  if (!overlayWindow) createOverlayWindow()
-  overlayWindow.show()
-  isOverlayVisible = true
-  updateTrayMenu()
-}
-
-function hideOverlay() {
-  if (overlayWindow) overlayWindow.hide()
-  isOverlayVisible = false
-  updateTrayMenu()
-}
-
-// ─── Python Whisper process ──────────────────────────────────────────────────
+// ─── Whisper process ─────────────────────────────────────────────────────────
 function startWhisperProcess() {
   const scriptPath = path.join(__dirname, 'whisper_server.py')
-
   if (!fs.existsSync(scriptPath)) {
-    console.error('[Whisper] whisper_server.py not found:', scriptPath)
+    console.error('[Whisper] whisper_server.py not found')
     return
   }
 
-  // Windows: 'python' or 'py'. Switched to 'py' for better compatibility on Windows.
   const pythonBin = process.platform === 'win32' ? 'py' : 'python3'
 
   try {
-    whisperProcess = spawn(pythonBin, ['whisper_server.py'])
+    whisperProcess = spawn(pythonBin, [scriptPath])
 
     whisperProcess.stdout.on('data', (data) => {
       try {
@@ -208,25 +172,21 @@ function startWhisperProcess() {
         if (overlayWindow && !overlayWindow.isDestroyed()) {
           overlayWindow.webContents.send('transcription', result)
         }
-      } catch (e) {
-        // ignore non-json (like bootup messages)
-      }
+      } catch (e) { /* ignore non-JSON startup messages */ }
     })
 
     whisperProcess.stderr.on('data', (data) => {
       console.error('[Whisper]', data.toString().trim())
-      // DO NOT quit app on whisper error
     })
 
     whisperProcess.on('close', (code) => {
-      console.log('[Whisper] process exited with code:', code)
+      console.log('[Whisper] exited with code:', code)
       whisperProcess = null
-      // DO NOT call app.quit() here — the app lives on
+      // Never quit the app when Python exits
     })
 
     whisperProcess.on('error', (err) => {
       console.error('[Whisper] failed to start:', err.message)
-      // DO NOT crash — just log it
     })
 
     console.log(`[SignBridge] Whisper process started (PID: ${whisperProcess.pid})`)
@@ -237,17 +197,12 @@ function startWhisperProcess() {
 
 function stopWhisperProcess() {
   if (whisperProcess) {
-    try {
-      whisperProcess.kill()
-    } catch (e) {
-      console.error('[SignBridge] Failed to kill Whisper:', e)
-    }
+    try { whisperProcess.kill() } catch (e) {}
     whisperProcess = null
   }
 }
 
 // ─── IPC handlers ────────────────────────────────────────────────────────────
-
 ipcMain.on('audio-chunk', (_event, buffer) => {
   if (whisperProcess && whisperProcess.stdin && !whisperProcess.stdin.destroyed) {
     try {
@@ -256,30 +211,28 @@ ipcMain.on('audio-chunk', (_event, buffer) => {
       whisperProcess.stdin.write(len)
       whisperProcess.stdin.write(buffer)
     } catch (e) {
-      console.error('[SignBridge] Failed to write audio chunk to Whisper stdin:', e.message)
+      console.error('[SignBridge] Failed to write audio chunk:', e.message)
     }
   }
 })
 
-ipcMain.handle('get-settings', () => {
-  return {
-    overlayOpacity: store.get('overlayOpacity'),
-    overlaySize: store.get('overlaySize'),
-    signLanguage: store.get('signLanguage'),
-    avatarSpeed: store.get('avatarSpeed'),
-    subtitlesEnabled: store.get('subtitlesEnabled'),
-  }
-})
+ipcMain.handle('get-settings', () => ({
+  overlayOpacity:  store.get('overlayOpacity'),
+  overlaySize:     store.get('overlaySize'),
+  signLanguage:    store.get('signLanguage'),
+  avatarSpeed:     store.get('avatarSpeed'),
+  subtitlesEnabled: store.get('subtitlesEnabled'),
+}))
 
 ipcMain.handle('save-settings', (_event, settings) => {
   try {
     store.set(settings)
-    if (overlayWindow && settings.overlayOpacity !== undefined) {
-      overlayWindow.setOpacity(settings.overlayOpacity)
-    }
-    if (overlayWindow && settings.overlaySize) {
-      const s = SIZES[settings.overlaySize] || SIZES.medium
-      overlayWindow.setSize(s.width, s.height)
+    if (overlayWindow) {
+      if (settings.overlayOpacity !== undefined) overlayWindow.setOpacity(settings.overlayOpacity)
+      if (settings.overlaySize) {
+        const s = SIZES[settings.overlaySize] || SIZES.medium
+        overlayWindow.setSize(s.width, s.height)
+      }
     }
     return true
   } catch (e) {
@@ -289,62 +242,47 @@ ipcMain.handle('save-settings', (_event, settings) => {
 })
 
 ipcMain.handle('load-dictionary', (_event, language) => {
-  const dictPath = path.join(__dirname, 'dictionaries', `${language}.json`)
   try {
-    const raw = fs.readFileSync(dictPath, 'utf8')
+    const raw = fs.readFileSync(path.join(__dirname, 'dictionaries', `${language}.json`), 'utf8')
     return JSON.parse(raw)
-  } catch (err) {
-    console.error(`[SignBridge] Failed to load dictionary '${language}':`, err.message)
+  } catch (e) {
+    console.error(`[SignBridge] Failed to load dictionary '${language}':`, e.message)
     return {}
   }
 })
 
 ipcMain.handle('resolve-clip-path', (_event, relativePath) => {
-  try {
-    return path.join(__dirname, relativePath)
-  } catch (e) {
-    console.error('[SignBridge] Failed to resolve clip path:', e)
-    return ''
-  }
+  try { return path.join(__dirname, relativePath) }
+  catch (e) { return '' }
 })
-
-ipcMain.on('overlay-hide', () => hideOverlay())
-ipcMain.on('overlay-close', () => app.quit())
-
-ipcMain.on('start-whisper', () => { if (!whisperProcess) startWhisperProcess() })
-ipcMain.on('stop-whisper', () => stopWhisperProcess())
 
 ipcMain.handle('get-desktop-audio-source', async () => {
   try {
-    const sources = await desktopCapturer.getSources({
-      types: ['screen', 'window'],
-      fetchWindowIcons: false,
-    })
+    const sources = await desktopCapturer.getSources({ types: ['screen'], fetchWindowIcons: false })
     return sources.length > 0 ? sources[0].id : null
   } catch (e) {
-    console.error('[SignBridge] Failed to get desktop audio source:', e)
+    console.error('[SignBridge] Failed to get desktop source:', e)
     return null
   }
 })
 
+ipcMain.on('overlay-hide',   () => hideOverlay())
+ipcMain.on('overlay-close',  () => app.quit())
+ipcMain.on('start-whisper',  () => { if (!whisperProcess) startWhisperProcess() })
+ipcMain.on('stop-whisper',   () => stopWhisperProcess())
+
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 app.on('ready', async () => {
   try {
+    // macOS microphone permission
     if (process.platform === 'darwin') {
       const granted = await systemPreferences.askForMediaAccess('microphone')
-      if (!granted) console.warn('[SignBridge] Microphone access denied on macOS.')
+      if (!granted) console.warn('[SignBridge] Microphone access denied.')
     }
 
-    session.defaultSession.setDisplayMediaRequestHandler(
-      (_request, callback) => {
-        desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
-          callback({ video: sources[0], audio: 'loopback' })
-        }).catch(err => {
-          console.error('[SignBridge] setDisplayMediaRequestHandler error:', err)
-        })
-      },
-      { useSystemPicker: false }
-    )
+    // FIX: Removed setDisplayMediaRequestHandler with loopback audio
+    // — that was crashing the renderer on Windows 10.
+    // Audio capture is handled directly in overlay.js via getUserMedia fallback.
 
     createOverlayWindow()
     createTray()
@@ -359,12 +297,10 @@ app.on('before-quit', () => {
   stopWhisperProcess()
 })
 
-// Re-implement correctly based on user logic:
-app.on('window-all-closed', (e) => {
-  // Do NOT quit — app lives in system tray
-  if (e) {
-    e.preventDefault()
-  }
+// FIX: Removed e.preventDefault() — window-all-closed is not cancellable.
+// Instead we just don't call app.quit() so the tray keeps the app alive.
+app.on('window-all-closed', () => {
+  // Do nothing — tray keeps app alive
 })
 
 app.on('activate', () => {
