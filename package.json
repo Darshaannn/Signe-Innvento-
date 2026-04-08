@@ -4,8 +4,8 @@
   "description": "Real-time sign language overlay desktop app for deaf-mute individuals",
   "main": "main.js",
   "scripts": {
-    "start": "electron --no-sandbox --disable-gpu --disable-software-rasterizer .",
-    "dev": "electron --no-sandbox --disable-gpu --disable-software-rasterizer . --dev",
+    "start": "electron .",
+    "dev": "electron . --dev",
     "build:win": "electron-builder --win",
     "build:mac": "electron-builder --mac",
     "build:linux": "electron-builder --linux",

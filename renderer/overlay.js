@@ -20,37 +20,48 @@ window.onunhandledrejection = (event) => {
 
 // ─── State ────────────────────────────────────────────────────────────────────
 const state = {
-  settings:      {},
-  dictionary:    {},
-  signQueue:     [],       // [{ word, clipRelPath }, ...]
-  isPlaying:     false,
-  isCapturing:   false,
-  captureMode:   null,     // 'sox' | 'mic-only' | null
-  micStream:     null,     // optional mic stream for visualiser only
-  micContext:    null,
-  micAnalyser:   null,
-  vizRafId:      null,
-  settingsOpen:  false,
+  settings: {},
+  dictionary: {},
+  signQueue: [],       // [{ word, clipRelPath }, ...]
+  isPlaying: false,
+  isCapturing: false,
+  captureMode: null,     // 'sox' | 'mic-only' | null
+  micStream: null,     // optional mic stream for visualiser only
+  micContext: null,
+  micAnalyser: null,
+  vizRafId: null,
+  settingsOpen: false,
 };
 
 // ─── DOM refs ─────────────────────────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
 
-const signVideo          = $("sign-video");
-const avatarPlaceholder  = $("avatar-placeholder");
-const subtitleEl         = $("subtitle");
-const unknownWordEl      = $("unknown-word");
-const queueIndicator     = $("queue-indicator");
-const transcriptText     = $("transcript-text");
-const settingsPanel      = $("settings-panel");
-const statusDot          = $("status-dot");
-const errorToast         = $("error-toast");
-const vizCanvas          = $("viz-canvas");
+const avatarCanvas = $("avatar-canvas");
+const signVideo = $("sign-video");
+let avatar = null;
+const avatarPlaceholder = $("avatar-placeholder");
+const subtitleEl = $("subtitle");
+const unknownWordEl = $("unknown-word");
+const queueIndicator = $("queue-indicator");
+const transcriptText = $("transcript-text");
+const settingsPanel = $("settings-panel");
+const statusDot = $("status-dot");
+const errorToast = $("error-toast");
+const vizCanvas = $("viz-canvas");
 
-const setLanguage  = $("set-language");
-const setSize      = $("set-size");
-const setOpacity   = $("set-opacity");
-const setSpeed     = $("set-speed");
+const btnSettings = $("btn-settings");
+const btnAudioMic = $("btn-audio-mic");
+const btnAudioSys = $("btn-audio-sys");
+const btnHide = $("btn-hide");
+const btnClose = $("btn-close");
+
+const onboardingModal = $("onboarding-modal");
+const btnFinishOnboarding = $("btn-finish-onboarding");
+
+const setLanguage = $("set-language");
+const setSize = $("set-size");
+const setOpacity = $("set-opacity");
+const setSpeed = $("set-speed");
 const setSubtitles = $("set-subtitles");
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
@@ -62,31 +73,98 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 async function init() {
-  // Load persisted settings
-  state.settings = await window.signBridge.getSettings();
-  applySettings(state.settings);
-  populateSettingsUI(state.settings);
+  window.onerror = (msg, url, lineNo, columnNo, error) => {
+    showError(`Error: ${msg} (Line: ${lineNo})`);
+    console.error("[SignBridge UI Error]", msg, error);
+    return false;
+  };
+  console.log("[SignBridge] Initializing renderer...");
 
-  // Load sign dictionary
-  await loadDictionary(state.settings.signLanguage);
+  // 1. Load user settings
+  try {
+    state.settings = await window.signBridge.getSettings();
+    applySettings(state.settings);
+    populateSettingsUI(state.settings);
+  } catch (e) {
+    console.error("[SignBridge] Failed to load settings:", e);
+    state.settings = {};
+  }
 
-  // Register IPC listeners from main process
-  window.signBridge.onTranscription(handleTranscription);
-  window.signBridge.onWhisperError(handleWhisperError);
-  window.signBridge.onOpenSettings(openSettings);
-  window.signBridge.onCaptureStatus(handleCaptureStatus);
+  // 2. Wire Button Events (Early so they are always interactive)
+  if (btnSettings) btnSettings.onclick = toggleSettings;
+  if (btnAudioMic) btnAudioMic.onclick = toggleMicCapture;
+  if (btnAudioSys) btnAudioSys.onclick = toggleSystemCapture;
+  if (btnHide) btnHide.onclick = () => window.signBridge.hideOverlay();
+  if (btnClose) btnClose.onclick = () => window.signBridge.closeApp();
+  const btnSave = $("btn-save-settings");
+  if (btnSave) btnSave.onclick = saveSettings;
 
-  // Build queue dot indicators
+  // 3. Setup Onboarding
+  const shouldShowOnboarding = !state.settings.onboardingComplete;
+  if (onboardingModal && shouldShowOnboarding) {
+    onboardingModal.style.display = "flex";
+    onboardingModal.classList.remove("hidden");
+  } else if (onboardingModal) {
+    onboardingModal.style.display = "none";
+    onboardingModal.classList.add("hidden");
+  }
+
+  if (btnFinishOnboarding) {
+    btnFinishOnboarding.onclick = async () => {
+      console.log("[SignBridge] Onboarding finished.");
+      // Immediately hide the modal
+      if (onboardingModal) {
+        onboardingModal.style.display = "none";
+        onboardingModal.classList.add("hidden");
+      }
+      // Save the flag directly to avoid any form-reading issues
+      try {
+        state.settings.onboardingComplete = true;
+        await window.signBridge.saveSettings({ onboardingComplete: true });
+        console.log("[SignBridge] onboardingComplete saved.");
+      } catch (e) {
+        console.error("[SignBridge] Failed to save onboarding state:", e);
+      }
+    };
+  }
+
+
+  // 4. Initialize Engine components
+  try {
+    const canvas = document.getElementById("avatar-canvas");
+    if (canvas && typeof AvatarRenderer !== "undefined") {
+      avatar = new AvatarRenderer(canvas);
+      avatar.start();
+    }
+  } catch (e) {
+    console.error("[SignBridge] Failed to init AvatarRenderer:", e);
+  }
+  await changeLanguage(state.settings.signLanguage || "ISL");
   renderQueueDots(0);
 
-  // Wire UI buttons
-  $("btn-settings").addEventListener("click", toggleSettings);
-  $("btn-audio").addEventListener("click",    toggleAudioCapture);
-  $("btn-hide").addEventListener("click",     () => window.signBridge.hideOverlay());
-  $("btn-close").addEventListener("click",    () => window.signBridge.closeApp());
-  $("btn-save-settings").addEventListener("click", saveSettings);
+  // 5. Set up IPC listeners with error safety
+  try {
+    window.signBridge.onTranscription(handleTranscription);
+    window.signBridge.onWhisperError(handleWhisperError);
+    window.signBridge.onOpenSettings(openSettings);
+    window.signBridge.onCaptureStatus(handleCaptureStatus);
 
-  // Settings live preview
+    const volumeBar = $("volume-meter-bar");
+    window.signBridge.onVolumeLevel((level) => {
+      if (volumeBar) {
+        const percent = Math.min(100, Math.round(level * 100));
+        volumeBar.style.width = `${percent}%`;
+        if (level < 0.01) {
+          setTimeout(() => { if (volumeBar.style.width !== "0%") volumeBar.style.width = "0%"; }, 300);
+        }
+      }
+    });
+  } catch (err) {
+    console.error("[SignBridge] Failed to setup IPC listeners:", err);
+  }
+
+
+  // Settings live preview...
   if (setOpacity) {
     setOpacity.addEventListener("input", () => {
       const app = document.getElementById("app");
@@ -109,41 +187,73 @@ async function loadDictionary(language) {
   }
 }
 
-// ─── Audio capture control ────────────────────────────────────────────────────
-async function toggleAudioCapture() {
-  if (state.isCapturing) {
+// ─── Audio Capture Flow ───────────────────────────────────────────────────────
+let captureToggleLock = false;
+
+function toggleMicCapture() {
+  if (captureToggleLock) return; // prevent rapid double-click
+  captureToggleLock = true;
+  setTimeout(() => { captureToggleLock = false; }, 1000); // 1 second debounce
+
+  if (state.isCapturing && state.captureMode === "mic") {
     stopCapture();
   } else {
-    startCapture();
+    if (state.isCapturing) stopCapture();
+    startMicCapture();
   }
 }
 
-function startCapture() {
-  console.log("[SignBridge] Requesting main process to start audio capture.");
-  setUICapturing(true, "starting");
-  transcriptText.textContent = "Starting audio capture…";
+function toggleSystemCapture() {
+  if (captureToggleLock) return;
+  captureToggleLock = true;
+  setTimeout(() => { captureToggleLock = false; }, 1000);
 
-  // Tell main process to start SoX recording
-  window.signBridge.startCapture();
-
-  // Optionally start a mic visualiser (purely cosmetic, never blocks)
-  startMicVisualiser().catch(() => {});
+  if (state.isCapturing && state.captureMode === "system") {
+    stopCapture();
+  } else {
+    if (state.isCapturing) stopCapture();
+    startSystemCapture();
+  }
 }
 
+function startMicCapture() {
+  console.log("[SignBridge] Starting mic capture.");
+  state.isCapturing = true;   // set BEFORE IPC so toggle checks work immediately
+  state.captureMode = "mic";
+  setUICapturing(true, "mic");
+  if (transcriptText) transcriptText.textContent = "Listening…";
+  setStatus("active");
+  window.signBridge.startCapture();
+}
+
+function startSystemCapture() {
+  console.log("[SignBridge] Starting system audio capture.");
+  state.isCapturing = true;
+  state.captureMode = "system";
+  setUICapturing(true, "system");
+  if (transcriptText) transcriptText.textContent = "Listening (system audio)…";
+  setStatus("active");
+  if (window.signBridge.startSystemCapture) {
+    window.signBridge.startSystemCapture();
+  } else {
+    window.signBridge.startCapture();
+  }
+}
+
+
 function stopCapture() {
-  console.log("[SignBridge] Requesting main process to stop audio capture.");
+  console.log("[SignBridge] Stopping Python audio capture.");
   window.signBridge.stopCapture();
-  stopMicVisualiser();
-  setUICapturing(false);
-  transcriptText.textContent = "Paused.";
+
+  handleCaptureStatus({ active: false, mode: "stopped" });
 }
 
 function handleCaptureStatus(status) {
   console.log("[SignBridge] Capture status:", status);
 
   if (status.active) {
-    state.isCapturing  = true;
-    state.captureMode  = status.mode;
+    state.isCapturing = true;
+    state.captureMode = status.mode;
     setUICapturing(true, status.mode);
     setStatus("active");
     transcriptText.textContent = "Listening…";
@@ -153,7 +263,6 @@ function handleCaptureStatus(status) {
   state.isCapturing = false;
   state.captureMode = null;
   setUICapturing(false);
-  stopMicVisualiser();
 
   switch (status.mode) {
     case "sox-missing":
@@ -182,50 +291,13 @@ function handleCaptureStatus(status) {
   }
 }
 
-// ─── Optional mic visualiser (cosmetic only, no desktop capture) ───────────────
-async function startMicVisualiser() {
-  if (!vizCanvas) return;
-  try {
-    state.micStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: false, noiseSuppression: false, sampleRate: 16000 },
-      video: false,
-    });
-
-    state.micContext  = new AudioContext();
-    state.micAnalyser = state.micContext.createAnalyser();
-    state.micAnalyser.fftSize = 256;
-
-    const source = state.micContext.createMediaStreamSource(state.micStream);
-    source.connect(state.micAnalyser);
-
-    drawVizFrame();
-    vizCanvas.style.display = "block";
-  } catch (err) {
-    if (vizCanvas) vizCanvas.style.display = "none";
-    console.log("[SignBridge] Mic visualiser unavailable:", err.message);
-  }
-}
-
-function stopMicVisualiser() {
-  if (state.vizRafId) { cancelAnimationFrame(state.vizRafId); state.vizRafId = null; }
-  if (state.micStream) {
-    try { state.micStream.getTracks().forEach((t) => t.stop()); } catch {}
-    state.micStream = null;
-  }
-  if (state.micContext) {
-    try { state.micContext.close(); } catch {}
-    state.micContext  = null;
-    state.micAnalyser = null;
-  }
-  if (vizCanvas) vizCanvas.style.display = "none";
-}
-
+// Visualiser frame loop (kept to draw visualizer bars based on state.micAnalyser)
 function drawVizFrame() {
   if (!state.micAnalyser || !vizCanvas) return;
-  const ctx    = vizCanvas.getContext("2d");
-  const width  = vizCanvas.width;
+  const ctx = vizCanvas.getContext("2d");
+  const width = vizCanvas.width;
   const height = vizCanvas.height;
-  const data   = new Uint8Array(state.micAnalyser.frequencyBinCount);
+  const data = new Uint8Array(state.micAnalyser.frequencyBinCount);
   state.micAnalyser.getByteFrequencyData(data);
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = "rgba(0, 229, 176, 0.7)";
@@ -242,9 +314,15 @@ function drawVizFrame() {
 // ─── Transcription handler ────────────────────────────────────────────────────
 function handleTranscription(result) {
   try {
-    if (!result || !result.text) return;
+    if (!result || !result.text) {
+      console.log("[SignBridge] Empty result received");
+      return;
+    }
     const rawText = result.text.trim();
-    if (!rawText) return;
+    if (!rawText) {
+      transcriptText.textContent = "Listening...";
+      return;
+    }
 
     console.log("[SignBridge] Transcription:", rawText);
 
@@ -262,9 +340,7 @@ function handleTranscription(result) {
 
     for (const word of words) {
       const clipRelPath = state.dictionary[word];
-      if (clipRelPath) {
-        state.signQueue.push({ word, clipRelPath });
-      }
+      state.signQueue.push({ word, clipRelPath: clipRelPath || null });
     }
 
     renderQueueDots(state.signQueue.length);
@@ -278,73 +354,55 @@ function handleTranscription(result) {
 async function playNextSign() {
   if (state.signQueue.length === 0) {
     state.isPlaying = false;
-    showPlaceholder(true);
     hideSubtitle();
     renderQueueDots(0);
     return;
   }
 
   state.isPlaying = true;
-  const { word, clipRelPath } = state.signQueue.shift();
+  const { word } = state.signQueue.shift();
   renderQueueDots(state.signQueue.length);
 
   try {
-    const absPath = await window.signBridge.resolveClipPath(clipRelPath);
-    const fileUrl = "file:///" + absPath.replace(/\\/g, "/").replace(/^\/+/, "");
-
-    showPlaceholder(false);
-    signVideo.classList.add("visible");
-    signVideo.src          = fileUrl;
-    signVideo.playbackRate = parseFloat(state.settings.avatarSpeed) || 1;
-    signVideo.load();
-
     if (state.settings.subtitlesEnabled) showSubtitle(word);
     hideUnknownWord();
 
-    const safetyTimer = setTimeout(() => {
-      try { signVideo.pause(); } catch {}
-      hideSubtitle();
-      playNextSign();
-    }, 8000);
+    if (avatar) {
+      avatar.setSpeed(parseFloat(state.settings.avatarSpeed) || 1);
 
-    signVideo.onended = () => {
-      clearTimeout(safetyTimer);
-      hideSubtitle();
-      playNextSign();
-    };
+      // Look up animation data (fallback to idle if not found)
+      let key = word.toLowerCase().replace(/\s+/g, "_");
+      if (key === "thank" || key === "thanks") key = "thank_you";
+      const signData = window.SIGN_POSES ? window.SIGN_POSES[key] : null;
 
-    try {
-      await signVideo.play();
-      clearTimeout(safetyTimer);
-      signVideo._safetyTimer = setTimeout(() => {
-        try { signVideo.pause(); } catch {}
+      if (signData) {
+        avatar.transitionTo(word, signData.duration || 400);
+      } else {
+        // Unknown word, display label but no animation
+        avatar.transitionTo(word, 200);
+      }
+
+      // Wait for the sign to finish (transition + holdTime) before playing next
+      const totalTime = (signData?.duration || 400) + (signData?.holdTime || 1000);
+
+      setTimeout(() => {
         hideSubtitle();
         playNextSign();
-      }, 8000);
-    } catch (playErr) {
-      clearTimeout(safetyTimer);
-      console.warn(`[SignBridge] Cannot play clip for "${word}":`, playErr.message);
-      showUnknownWord();
-      hideSubtitle();
-      await sleep(500);
-      playNextSign();
+      }, totalTime / (parseFloat(state.settings.avatarSpeed) || 1));
+
+    } else {
+      setTimeout(() => { hideSubtitle(); playNextSign(); }, 1500);
     }
   } catch (err) {
     console.error("[SignBridge] playNextSign error:", err);
     hideSubtitle();
-    await sleep(500);
-    playNextSign();
+    setTimeout(playNextSign, 500);
   }
 }
 
-signVideo.addEventListener("playing", () => {
-  clearTimeout(signVideo._safetyTimer);
-});
-
 // ─── UI helpers ───────────────────────────────────────────────────────────────
 function showPlaceholder(show) {
-  if (avatarPlaceholder) avatarPlaceholder.classList.toggle("hidden", !show);
-  signVideo.classList.toggle("visible", !show);
+  // Not used in AvatarRenderer mode since it idles automatically
 }
 
 function showSubtitle(word) {
@@ -382,7 +440,7 @@ function setStatus(mode) {
   if (!statusDot) return;
   statusDot.className = "status-dot";
   if (mode === "active") statusDot.classList.add("active");
-  if (mode === "error")  statusDot.classList.add("error");
+  if (mode === "error") statusDot.classList.add("error");
 }
 
 let errorToastTimer = null;
@@ -399,23 +457,32 @@ function handleWhisperError(msg) {
   setStatus("error");
 }
 
-function setUICapturing(active, mode) {
-  const btn = $("btn-audio");
-  if (!btn) return;
-  state.isCapturing = active;
-  if (!active) {
-    btn.textContent = "▶";
-    btn.title       = "Start audio capture";
-    setStatus("idle");
-    return;
-  }
-  if (mode === "starting") {
-    btn.textContent = "…";
-    btn.title       = "Starting…";
-  } else {
-    btn.textContent = "⏸";
-    btn.title       = "Capturing — click to stop";
+function setUICapturing(isCapturing, mode = null) {
+  state.isCapturing = !!isCapturing;
+  if (!btnAudioMic || !btnAudioSys) return;
+
+  if (isCapturing) {
     setStatus("active");
+    if (mode === "mic" || mode === "mic-webrtc") {
+      btnAudioMic.innerHTML = "⏹";
+      btnAudioSys.innerHTML = "🖥️";
+      btnAudioMic.classList.add("active");
+      btnAudioSys.classList.remove("active");
+    } else if (mode === "system") {
+      btnAudioSys.innerHTML = "⏹";
+      btnAudioMic.innerHTML = "🎤";
+      btnAudioSys.classList.add("active");
+      btnAudioMic.classList.remove("active");
+    } else {
+      btnAudioMic.innerHTML = "⏸";
+      btnAudioSys.innerHTML = "⏸";
+    }
+  } else {
+    setStatus("idle");
+    btnAudioMic.innerHTML = "🎤";
+    btnAudioSys.innerHTML = "🖥️";
+    btnAudioMic.classList.remove("active");
+    btnAudioSys.classList.remove("active");
   }
 }
 
@@ -434,38 +501,56 @@ function closeSettings() {
   state.settingsOpen = false;
 }
 
+async function changeLanguage(lang) {
+  try {
+    const dict = await window.signBridge.loadDictionary(lang);
+    if (dict) {
+      state.dictionary = dict;
+      console.log(`[SignBridge] Swapped dictionary to ${lang} (${Object.keys(dict).length} words)`);
+      return true;
+    }
+  } catch (e) {
+    console.error(`[SignBridge] Failed to change language to ${lang}:`, e);
+  }
+  return false;
+}
+
 function populateSettingsUI(s) {
-  if (setLanguage)  setLanguage.value    = s.signLanguage   || "ISL";
-  if (setSize)      setSize.value        = s.overlaySize    || "medium";
-  if (setOpacity)   setOpacity.value     = s.overlayOpacity || 0.92;
-  if (setSpeed)     setSpeed.value       = String(s.avatarSpeed || 1);
+  if (setLanguage) setLanguage.value = s.signLanguage || "ISL";
+  if (setSize) setSize.value = s.overlaySize || "medium";
+  if (setOpacity) setOpacity.value = s.overlayOpacity || 0.92;
+  if (setSpeed) setSpeed.value = String(s.avatarSpeed || 1);
   if (setSubtitles) setSubtitles.checked = s.subtitlesEnabled !== false;
 }
 
 async function saveSettings() {
+  console.log("[SignBridge] Saving settings to main process...", state.settings);
   try {
-    const newSettings = {
-      signLanguage:     setLanguage  ? setLanguage.value        : state.settings.signLanguage,
-      overlaySize:      setSize      ? setSize.value             : state.settings.overlaySize,
-      overlayOpacity:   setOpacity   ? parseFloat(setOpacity.value) : state.settings.overlayOpacity,
-      avatarSpeed:      setSpeed     ? parseFloat(setSpeed.value)   : state.settings.avatarSpeed,
-      subtitlesEnabled: setSubtitles ? setSubtitles.checked         : state.settings.subtitlesEnabled,
+    const s = {
+      signLanguage: (setLanguage && setLanguage.value) ? setLanguage.value : (state.settings.signLanguage || "ISL"),
+      overlaySize: (setSize && setSize.value) ? setSize.value : (state.settings.overlaySize || "medium"),
+      overlayOpacity: (setOpacity && setOpacity.value) ? parseFloat(setOpacity.value) : (state.settings.overlayOpacity || 0.92),
+      avatarSpeed: (setSpeed && setSpeed.value) ? parseFloat(setSpeed.value) : (state.settings.avatarSpeed || 1),
+      subtitlesEnabled: setSubtitles ? setSubtitles.checked : (state.settings.subtitlesEnabled !== false),
+      onboardingComplete: !!state.settings.onboardingComplete
     };
-    await window.signBridge.saveSettings(newSettings);
-    if (newSettings.signLanguage !== state.settings.signLanguage) {
-      await loadDictionary(newSettings.signLanguage);
-    }
-    state.settings = { ...state.settings, ...newSettings };
-    applySettings(state.settings);
+
+    console.log("[SignBridge] Compiled settings object:", s);
+    await window.signBridge.saveSettings(s);
+    state.settings = s;
+    applySettings(s);
     closeSettings();
+    console.log("[SignBridge] Settings saved to disk.");
   } catch (err) {
+    console.error("[SignBridge] Failed to save settings:", err);
     showError(`Failed to save settings: ${err.message}`);
   }
 }
 
 function applySettings(s) {
   const appEl = document.getElementById("app");
-  if (appEl)    appEl.style.opacity = s.overlayOpacity || 0.92;
+  if (appEl) appEl.style.opacity = s.overlayOpacity || 0.92;
+  if (avatar) avatar.setSpeed(s.avatarSpeed || 1);
   if (signVideo) signVideo.playbackRate = s.avatarSpeed || 1;
 }
 

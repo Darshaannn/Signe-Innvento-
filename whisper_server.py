@@ -38,10 +38,11 @@ except ImportError:
     sys.exit(1)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-SAMPLE_RATE = 16_000        # Hz — must match renderer audio capture
-MODEL_SIZE  = "small"       # "tiny" | "base" | "small" | "medium" | "large-v3"
-DEVICE      = "cpu"         # "cpu" | "cuda" — change to "cuda" if GPU available
-COMPUTE     = "int8"        # "int8" is fastest on CPU; use "float16" for GPU
+SAMPLE_RATE  = 16_000       # Hz — must match renderer audio capture
+MODEL_SIZE   = "tiny"       # "tiny"=fastest, "base"=balanced, "small"=accurate
+DEVICE       = "cpu"        # "cpu" | "cuda" — change to "cuda" if GPU available
+COMPUTE      = "int8"       # "int8" is fastest on CPU; use "float16" for GPU
+CHUNK_SECS   = 1            # seconds of audio per transcription (lower = faster)
 
 
 def load_model():
@@ -83,12 +84,16 @@ def transcribe_chunk(model: WhisperModel, audio: np.ndarray) -> dict:
     """Run Whisper on a float32 audio array, return result dict."""
     segments, info = model.transcribe(
         audio,
-        language=None,          # auto-detect
-        beam_size=3,
+        language="en",          # force English — avoids language detection overhead
+        beam_size=1,            # greedy decoding — fastest, slightly less accurate
+        best_of=1,              # no candidates sampling needed
+        temperature=0,          # deterministic, no temperature sampling
         vad_filter=True,        # skip silent regions
+        condition_on_previous_text=False,  # no context carry-over = faster
         vad_parameters={
-            "min_silence_duration_ms": 300,
-            "speech_pad_ms": 200,
+            "min_silence_duration_ms": 200,  # shorter silence = more responsive
+            "speech_pad_ms": 100,            # less padding = less delay
+            "threshold": 0.4,               # lower threshold = more sensitive
         },
     )
 
@@ -110,41 +115,148 @@ def transcribe_chunk(model: WhisperModel, audio: np.ndarray) -> dict:
     }
 
 
-def run_server():
-    model = load_model()
-    stdin  = sys.stdin.buffer
-    stdout = sys.stdout
+import threading
+import queue
 
-    sys.stderr.write("[SignBridge] Whisper server listening on stdin…\n")
+try:
+    import sounddevice as sd
+except ImportError:
+    sys.stderr.write("[SignBridge] sounddevice not found. Run: pip install sounddevice\n")
+    sys.exit(1)
 
+is_capturing = False
+capture_mode = "mic"
+
+def find_system_audio_device():
+    try:
+        devices = sd.query_devices()
+        for i, dev in enumerate(devices):
+            name = dev.get('name', '').lower()
+            channels = dev.get('max_input_channels', 0)
+            if channels > 0 and ('cable output' in name or 'stereo mix' in name):
+                return i
+    except Exception as e:
+        sys.stderr.write(f"[SignBridge] Error querying devices: {e}\n")
+    return None
+
+def input_thread():
+    """Read commands from stdin. Keeps running; ignores stdin close gracefully."""
+    global is_capturing, capture_mode
     while True:
         try:
-            raw = read_chunk(stdin)
+            line = sys.stdin.readline()
+            if not line:
+                # stdin closed - wait and try again (Electron may reconnect)
+                import time
+                time.sleep(0.5)
+                continue
+            cmd = line.strip()
+            if not cmd:
+                continue
+            if cmd == "START" or cmd == "START_MIC":
+                capture_mode = "mic"
+                is_capturing = True
+                sys.stderr.write("[SignBridge] Audio capture START (Mic)\n")
+                sys.stderr.flush()
+            elif cmd == "START_SYSTEM":
+                capture_mode = "system"
+                is_capturing = True
+                sys.stderr.write("[SignBridge] Audio capture START (System)\n")
+                sys.stderr.flush()
+            elif cmd == "STOP":
+                is_capturing = False
+                sys.stderr.write("[SignBridge] Audio capture STOP\n")
+                sys.stderr.flush()
         except Exception as e:
-            sys.stderr.write(f"[SignBridge] stdin read error: {e}\n")
-            break
+            sys.stderr.write(f"[SignBridge] input_thread error: {e}\n")
+            sys.stderr.flush()
+            import time
+            time.sleep(0.1)
 
-        if raw is None:
-            # EOF — parent process closed stdin, exit cleanly
-            sys.stderr.write("[SignBridge] stdin closed. Exiting.\n")
-            break
+def run_server():
+    model = load_model()
+    t = threading.Thread(target=input_thread, daemon=True)
+    t.start()
 
-        if len(raw) < 320:
-            # Too short to be meaningful (< 10ms of audio) — skip
-            continue
+    sys.stderr.write("[SignBridge] Whisper server listening on stdin for commands…\n")
+    sys.stderr.flush()
+    
+    q = queue.Queue()
+    def audio_callback(indata, frames, time, status):
+        if is_capturing:  # Only queue audio when actually capturing
+            q.put(indata.copy())
 
-        audio = pcm_bytes_to_float32(raw)
+    current_stream = None
 
+    accumulated = np.zeros((0, 1), dtype=np.float32)
+
+    while True:
+        global is_capturing, capture_mode
+        if is_capturing:
+            if current_stream is None:
+                device_id = None
+                if capture_mode == "system":
+                    device_id = find_system_audio_device()
+                    if device_id is None:
+                        sys.stderr.write("[SignBridge] System audio device not found, falling back to default mic.\n")
+                
+                try:
+                    sys.stderr.write(f"[SignBridge] Opening {capture_mode} stream (samplerate={SAMPLE_RATE}, device={device_id})…\n")
+                    current_stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype='float32', callback=audio_callback, device=device_id)
+                    current_stream.start()
+                    sys.stderr.write(f"[SignBridge] {capture_mode.capitalize()} stream active.\n")
+                except Exception as e:
+                    sys.stderr.write(f"[SignBridge] CRITICAL: Failed to open {capture_mode} stream: {e}\n")
+                    is_capturing = False
+                    continue
+        else:
+            if current_stream is not None:
+                current_stream.stop()
+                current_stream.close()
+                current_stream = None
+                accumulated = np.zeros((0, 1), dtype=np.float32)
+                # clear pending queue
+                while not q.empty():
+                    q.get()
+        
         try:
-            result = transcribe_chunk(model, audio)
-        except Exception as e:
-            sys.stderr.write(f"[SignBridge] Transcription error: {e}\n")
+            chunk = q.get(timeout=0.2)
+        except queue.Empty:
             continue
+            
+        accumulated = np.vstack((accumulated, chunk))
 
-        if result["text"]:
-            line = json.dumps(result, ensure_ascii=False)
-            stdout.write(line + "\n")
-            stdout.flush()
+        # Emit volume/level for UI feedback (throttled)
+        import time
+        if not hasattr(run_server, 'last_vol_time'):
+            run_server.last_vol_time = 0
+            
+        now = time.time()
+        if now - run_server.last_vol_time > 0.1: # 100ms throttle
+            try:
+                level = np.abs(chunk).mean()
+                ui_level = min(1.0, level * 20) 
+                if ui_level > 0.005:
+                    sys.stdout.write(json.dumps({"type": "volume", "value": round(float(ui_level), 3)}) + "\n")
+                    sys.stdout.flush()
+                    run_server.last_vol_time = now
+            except:
+                pass
+
+            
+        if len(accumulated) >= SAMPLE_RATE * CHUNK_SECS:
+
+            audio_chunk = accumulated[:SAMPLE_RATE * CHUNK_SECS, 0]
+            accumulated = accumulated[SAMPLE_RATE * CHUNK_SECS:]
+            
+            try:
+                result = transcribe_chunk(model, audio_chunk)
+                if result["text"]:
+                    line = json.dumps(result, ensure_ascii=False)
+                    sys.stdout.write(line + "\n")
+                    sys.stdout.flush()
+            except Exception as e:
+                sys.stderr.write(f"[SignBridge] Transcription error: {e}\n")
 
 
 def run_test():

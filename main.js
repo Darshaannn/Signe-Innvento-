@@ -22,7 +22,7 @@ app.commandLine.appendSwitch("disable-gpu-compositing");
 app.commandLine.appendSwitch("disable-software-rasterizer");
 app.commandLine.appendSwitch("disable-gpu-shader-disk-cache");
 
-const os   = require("os");
+const os = require("os");
 const path = require("path");
 const tmpCache = path.join(os.tmpdir(), "signbridge-cache");
 app.commandLine.appendSwitch("disk-cache-dir", tmpCache);
@@ -39,53 +39,46 @@ const {
   desktopCapturer,
 } = require("electron");
 
-const { spawn }  = require("child_process");
-const fs         = require("fs");
-const Store      = require("electron-store");
+const { spawn } = require("child_process");
+const fs = require("fs");
+const Store = require("electron-store");
 
-// node-record-lpcm16 — graceful require so the app starts even if not installed
-let recorder = null;
-try {
-  recorder = require("node-record-lpcm16");
-} catch {
-  console.warn(
-    "[SignBridge] node-record-lpcm16 not found. Run: npm install node-record-lpcm16\n" +
-    "             Audio capture will be unavailable until it is installed."
-  );
-}
+// node-record-lpcm16 was causing issues on Windows (using `-d` instead of waveaudio).
+// We bypass it and spawn SoX natively.
+const { spawn } = require("child_process");
 
 // ─── Persistence ─────────────────────────────────────────────────────────────
 const store = new Store({
   defaults: {
-    overlayOpacity:   0.92,
-    overlaySize:      "medium",
-    signLanguage:     "ISL",
-    avatarSpeed:      1,
+    overlayOpacity: 0.92,
+    overlaySize: "medium",
+    signLanguage: "ISL",
+    avatarSpeed: 1,
     subtitlesEnabled: true,
-    windowBounds:     { x: 80, y: 80, width: 380, height: 420 },
+    windowBounds: { x: 80, y: 80, width: 380, height: 420 },
   },
 });
 
 // ─── Globals ──────────────────────────────────────────────────────────────────
-let overlayWindow    = null;
-let tray             = null;
-let whisperProcess   = null;
+let overlayWindow = null;
+let tray = null;
+let whisperProcess = null;
 let recordingSession = null;   // active node-record-lpcm16 Recording object
 let isOverlayVisible = true;
 const isDev = process.argv.includes("--dev");
 
 // ─── Window sizes ─────────────────────────────────────────────────────────────
 const SIZES = {
-  small:  { width: 280, height: 320 },
+  small: { width: 280, height: 320 },
   medium: { width: 380, height: 420 },
-  large:  { width: 500, height: 560 },
+  large: { width: 500, height: 560 },
 };
 
 // ─── Overlay window ───────────────────────────────────────────────────────────
 function createOverlayWindow() {
   const savedBounds = store.get("windowBounds");
-  const sizeKey     = store.get("overlaySize");
-  const size        = SIZES[sizeKey] || SIZES.medium;
+  const sizeKey = store.get("overlaySize");
+  const size = SIZES[sizeKey] || SIZES.medium;
 
   overlayWindow = new BrowserWindow({
     x: savedBounds.x,
@@ -233,7 +226,7 @@ function startWhisperProcess() {
 
 function stopWhisperProcess() {
   if (whisperProcess) {
-    try { whisperProcess.kill(); } catch (e) {}
+    try { whisperProcess.kill(); } catch (e) { }
     whisperProcess = null;
   }
 }
@@ -252,10 +245,10 @@ function sendChunkToWhisper(int16Buffer) {
 }
 
 // ─── Main-process audio capture (node-record-lpcm16 + SoX) ───────────────────
-const SAMPLE_RATE    = 16000;
+const SAMPLE_RATE = 16000;
 const BYTES_PER_SAMPLE = 2; // int16
-const CHUNK_SECONDS  = 2;
-const CHUNK_BYTES    = SAMPLE_RATE * BYTES_PER_SAMPLE * CHUNK_SECONDS; // 64000
+const CHUNK_SECONDS = 2;
+const CHUNK_BYTES = SAMPLE_RATE * BYTES_PER_SAMPLE * CHUNK_SECONDS; // 64000
 
 let audioAccumulator = Buffer.alloc(0);
 
@@ -265,35 +258,22 @@ function startMainProcessCapture() {
     return;
   }
 
-  if (!recorder) {
-    if (overlayWindow && !overlayWindow.isDestroyed()) {
-      overlayWindow.webContents.send("capture-status", {
-        active: false,
-        mode: "mic-unavailable",
-        error: "node-record-lpcm16 not installed. Run: npm install node-record-lpcm16",
-      });
-    }
-    return;
-  }
-
   console.log("[SignBridge] Starting main-process capture via SoX...");
 
   try {
-    recordingSession = recorder.record({
-      sampleRate: SAMPLE_RATE,
-      channels: 1,
-      audioType: "raw",
-      encoding: "signed-integer",
-      bits: 16,
-      endian: "little",
-      device: null,
-      recorder: "sox",
-      silence: 0,
-    });
+    recordingSession = spawn("sox", [
+      "-t", "waveaudio", "default",
+      "-t", "raw",
+      "-r", SAMPLE_RATE.toString(),
+      "-c", "1",
+      "-e", "signed-integer",
+      "-b", "16",
+      "-"
+    ]);
 
     audioAccumulator = Buffer.alloc(0);
 
-    recordingSession.stream().on("data", (chunk) => {
+    recordingSession.stdout.on("data", (chunk) => {
       audioAccumulator = Buffer.concat([audioAccumulator, chunk]);
       while (audioAccumulator.length >= CHUNK_BYTES) {
         const chunkToSend = audioAccumulator.slice(0, CHUNK_BYTES);
@@ -302,20 +282,28 @@ function startMainProcessCapture() {
       }
     });
 
-    recordingSession.stream().on("error", (err) => {
+    recordingSession.stderr.on("data", (data) => {
+      // SoX prints some info to stderr, we only care if it's an error
+      const msg = data.toString();
+      if (msg.toLowerCase().includes("fail") || msg.toLowerCase().includes("error")) {
+        console.error("[SignBridge] SoX error:", msg.trim());
+      }
+    });
+
+    recordingSession.on("error", (err) => {
       console.error("[SignBridge] Audio stream error:", err.message);
       stopMainProcessCapture();
       if (overlayWindow && !overlayWindow.isDestroyed()) {
         overlayWindow.webContents.send("capture-status", {
           active: false,
-          mode: "error",
+          mode: err.code === "ENOENT" ? "sox-missing" : "error",
           error: err.message,
         });
       }
     });
 
-    recordingSession.stream().on("close", () => {
-      console.log("[SignBridge] Audio stream closed.");
+    recordingSession.on("close", (code) => {
+      console.log("[SignBridge] Audio stream closed with code:", code);
       recordingSession = null;
       if (overlayWindow && !overlayWindow.isDestroyed()) {
         overlayWindow.webContents.send("capture-status", { active: false, mode: "stopped" });
@@ -343,7 +331,7 @@ function startMainProcessCapture() {
 function stopMainProcessCapture() {
   if (!recordingSession) return;
   try {
-    recordingSession.stop();
+    recordingSession.kill();
     console.log("[SignBridge] Audio capture stopped.");
   } catch (err) {
     console.warn("[SignBridge] Error stopping capture:", err.message);
