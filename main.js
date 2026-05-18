@@ -13,14 +13,17 @@
  * IPC messages. Audio bytes are piped directly to whisper_server.py stdin here.
  */
 
-// ─── Suppress Chromium cache / GPU noise BEFORE app is ready ─────────────────
+// ─── Environment Safeguards ──────────────────────────────────────────────────
 const { app } = require("electron");
+delete process.env.ELECTRON_RUN_AS_NODE;
+
+// ─── Ensure Sox is in path ────────────────────────────────────────────────────
+const soxPath = "C:\\Program Files (x86)\\sox-14-4-2";
+if (process.platform === "win32" && !process.env.PATH.includes(soxPath)) {
+  process.env.PATH = `${soxPath};${process.env.PATH}`;
+}
 
 app.commandLine.appendSwitch("no-sandbox");
-app.commandLine.appendSwitch("disable-gpu");
-app.commandLine.appendSwitch("disable-gpu-compositing");
-app.commandLine.appendSwitch("disable-software-rasterizer");
-app.commandLine.appendSwitch("disable-gpu-shader-disk-cache");
 
 const os = require("os");
 const path = require("path");
@@ -185,6 +188,10 @@ function startWhisperProcess() {
     whisperProcess = spawn(pythonBin, [scriptPath], { stdio: ["pipe", "pipe", "pipe"] });
 
     let stdoutBuffer = "";
+    // Prevent EPIPE (broken pipe) from crashing the entire app if Python dies
+    whisperProcess.stdin.on("error", (err) => {
+      console.error("[SignBridge] Whisper stdin error (likely EPIPE):", err.message);
+    });
     whisperProcess.stdout.on("data", (data) => {
       stdoutBuffer += data.toString();
       let parts = stdoutBuffer.split("\n");
