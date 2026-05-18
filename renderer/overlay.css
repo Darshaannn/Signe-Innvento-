@@ -188,10 +188,11 @@ body {
 
 #avatar-canvas,
 #sign-video {
-  max-width: 100%;
-  max-height: calc(100% - 50px);
-  width: auto;
+  width: 100%;
+  max-width: 300px;
   height: auto;
+  aspect-ratio: 300 / 280;
+  max-height: calc(100% - 50px);
   border-radius: 8px;
   object-fit: contain;
   display: none;

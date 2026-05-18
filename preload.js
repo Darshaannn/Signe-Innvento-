@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld("signBridge", {
   // Renderer sends these; main process runs SoX and pipes audio to Whisper.
   // No getUserMedia / WebRTC / desktopCapturer in renderer at all for capture.
   startCapture: () => ipcRenderer.send("start-capture"),
+  startSystemCapture: () => ipcRenderer.send("start-system-capture"),
   stopCapture: () => ipcRenderer.send("stop-capture"),
 
   // ── Legacy renderer-side audio (kept for compatibility) ─────────────────────

@@ -360,7 +360,7 @@ async function playNextSign() {
   }
 
   state.isPlaying = true;
-  const { word } = state.signQueue.shift();
+  const { word, clipRelPath } = state.signQueue.shift();
   renderQueueDots(state.signQueue.length);
 
   try {
@@ -372,11 +372,19 @@ async function playNextSign() {
 
       // Look up animation data (fallback to idle if not found)
       let key = word.toLowerCase().replace(/\s+/g, "_");
+
+      // Use dictionary mapping if available (e.g. "hi" -> "clips/ISL/hello.mp4" -> "hello")
+      if (clipRelPath) {
+        const match = clipRelPath.match(/\/([^/]+)\.mp4$/);
+        if (match) key = match[1];
+      }
+
       if (key === "thank" || key === "thanks") key = "thank_you";
       const signData = window.SIGN_POSES ? window.SIGN_POSES[key] : null;
 
       if (signData) {
-        avatar.transitionTo(word, signData.duration || 400);
+        avatar.transitionTo(key, signData.duration || 400); // Pass mapped key to avatar so it can show the base word
+        avatar.label = word; // Set the actual spoken word as the visual label
       } else {
         // Unknown word, display label but no animation
         avatar.transitionTo(word, 200);

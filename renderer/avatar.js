@@ -418,11 +418,19 @@ class AvatarRenderer {
     }
 
     ctx.beginPath();
-    ctx.lineWidth = 7;
-    ctx.strokeStyle = PALETTE.skin;
     ctx.moveTo(thumbX, 10);
     ctx.lineTo(thumbX + Math.sin(thumbA) * 18, 10 + Math.cos(thumbA) * 18);
+
+    // Outline
+    ctx.lineWidth = 9;
+    ctx.strokeStyle = PALETTE.outline;
     ctx.stroke();
+
+    // Skin
+    ctx.lineWidth = 7;
+    ctx.strokeStyle = PALETTE.skin;
+    ctx.stroke();
+
     ctx.lineWidth = 1.5;
     ctx.strokeStyle = PALETTE.outline;
     ctx.strokeRect(thumbX - 3.5, 10, 7, 2); // joint line
@@ -447,16 +455,15 @@ class AvatarRenderer {
     ctx.moveTo(fx, fy);
     ctx.lineTo(tipX, tipY);
 
-    // Skin
-    ctx.strokeStyle = PALETTE.skin;
-    ctx.stroke();
-
     // Outline
     ctx.lineWidth = 8;
     ctx.strokeStyle = PALETTE.outline;
-    ctx.globalCompositeOperation = 'destination-over';
     ctx.stroke();
-    ctx.globalCompositeOperation = 'source-over';
+
+    // Skin
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = PALETTE.skin;
+    ctx.stroke();
 
     // Joint crease if curled
     if (curl > 0.4) {

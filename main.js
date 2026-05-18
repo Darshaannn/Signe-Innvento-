@@ -45,7 +45,6 @@ const Store = require("electron-store");
 
 // node-record-lpcm16 was causing issues on Windows (using `-d` instead of waveaudio).
 // We bypass it and spawn SoX natively.
-const { spawn } = require("child_process");
 
 // ─── Persistence ─────────────────────────────────────────────────────────────
 const store = new Store({
@@ -185,12 +184,21 @@ function startWhisperProcess() {
   try {
     whisperProcess = spawn(pythonBin, [scriptPath], { stdio: ["pipe", "pipe", "pipe"] });
 
+    let stdoutBuffer = "";
     whisperProcess.stdout.on("data", (data) => {
-      for (const line of data.toString().split("\n").filter(Boolean)) {
+      stdoutBuffer += data.toString();
+      let parts = stdoutBuffer.split("\n");
+      stdoutBuffer = parts.pop();
+      for (const line of parts) {
+        if (!line.trim()) continue;
         try {
           const result = JSON.parse(line);
           if (overlayWindow && !overlayWindow.isDestroyed()) {
-            overlayWindow.webContents.send("transcription", result);
+            if (result.type === "volume") {
+              overlayWindow.webContents.send("volume-level", result.value);
+            } else {
+              overlayWindow.webContents.send("transcription", result);
+            }
           }
         } catch (e) {
           if (isDev) console.log("[Whisper stdout]", line);
@@ -231,127 +239,50 @@ function stopWhisperProcess() {
   }
 }
 
-// ─── Write one audio chunk to Whisper stdin (length-prefixed protocol) ────────
-function sendChunkToWhisper(int16Buffer) {
-  if (!whisperProcess || !whisperProcess.stdin || whisperProcess.stdin.destroyed) return;
-  try {
-    const len = Buffer.alloc(4);
-    len.writeUInt32LE(int16Buffer.length, 0);
-    whisperProcess.stdin.write(len);
-    whisperProcess.stdin.write(int16Buffer);
-  } catch (e) {
-    console.error("[SignBridge] Failed to send audio chunk to Whisper:", e.message);
-  }
-}
-
-// ─── Main-process audio capture (node-record-lpcm16 + SoX) ───────────────────
-const SAMPLE_RATE = 16000;
-const BYTES_PER_SAMPLE = 2; // int16
-const CHUNK_SECONDS = 2;
-const CHUNK_BYTES = SAMPLE_RATE * BYTES_PER_SAMPLE * CHUNK_SECONDS; // 64000
-
-let audioAccumulator = Buffer.alloc(0);
-
-function startMainProcessCapture() {
-  if (recordingSession) {
-    console.warn("[SignBridge] Capture already running.");
+// ─── Main-process audio capture (Delegated to Python whisper_server) ────────
+function startMainProcessCapture(mode = "mic") {
+  if (!whisperProcess || !whisperProcess.stdin || whisperProcess.stdin.destroyed) {
+    console.error("[SignBridge] Cannot start capture: Whisper process not running.");
+    if (overlayWindow && !overlayWindow.isDestroyed()) {
+      overlayWindow.webContents.send("capture-status", { active: false, mode: "error", error: "Whisper is not ready" });
+    }
     return;
   }
-
-  console.log("[SignBridge] Starting main-process capture via SoX...");
-
+  const cmd = mode === "system" ? "START_SYSTEM\n" : "START\n";
   try {
-    recordingSession = spawn("sox", [
-      "-t", "waveaudio", "default",
-      "-t", "raw",
-      "-r", SAMPLE_RATE.toString(),
-      "-c", "1",
-      "-e", "signed-integer",
-      "-b", "16",
-      "-"
-    ]);
-
-    audioAccumulator = Buffer.alloc(0);
-
-    recordingSession.stdout.on("data", (chunk) => {
-      audioAccumulator = Buffer.concat([audioAccumulator, chunk]);
-      while (audioAccumulator.length >= CHUNK_BYTES) {
-        const chunkToSend = audioAccumulator.slice(0, CHUNK_BYTES);
-        audioAccumulator = audioAccumulator.slice(CHUNK_BYTES);
-        sendChunkToWhisper(chunkToSend);
-      }
-    });
-
-    recordingSession.stderr.on("data", (data) => {
-      // SoX prints some info to stderr, we only care if it's an error
-      const msg = data.toString();
-      if (msg.toLowerCase().includes("fail") || msg.toLowerCase().includes("error")) {
-        console.error("[SignBridge] SoX error:", msg.trim());
-      }
-    });
-
-    recordingSession.on("error", (err) => {
-      console.error("[SignBridge] Audio stream error:", err.message);
-      stopMainProcessCapture();
-      if (overlayWindow && !overlayWindow.isDestroyed()) {
-        overlayWindow.webContents.send("capture-status", {
-          active: false,
-          mode: err.code === "ENOENT" ? "sox-missing" : "error",
-          error: err.message,
-        });
-      }
-    });
-
-    recordingSession.on("close", (code) => {
-      console.log("[SignBridge] Audio stream closed with code:", code);
-      recordingSession = null;
-      if (overlayWindow && !overlayWindow.isDestroyed()) {
-        overlayWindow.webContents.send("capture-status", { active: false, mode: "stopped" });
-      }
-    });
-
+    whisperProcess.stdin.write(cmd);
     if (overlayWindow && !overlayWindow.isDestroyed()) {
-      overlayWindow.webContents.send("capture-status", { active: true, mode: "sox" });
+      overlayWindow.webContents.send("capture-status", { active: true, mode });
     }
-
   } catch (err) {
-    console.error("[SignBridge] Failed to start capture:", err.message);
-    recordingSession = null;
-    const isSoxMissing = err.message.includes("ENOENT") || err.message.includes("spawn") || err.message.includes("sox");
-    if (overlayWindow && !overlayWindow.isDestroyed()) {
-      overlayWindow.webContents.send("capture-status", {
-        active: false,
-        mode: isSoxMissing ? "sox-missing" : "error",
-        error: err.message,
-      });
-    }
+    console.error("[SignBridge] Failed to send START to whisper:", err);
   }
 }
 
 function stopMainProcessCapture() {
-  if (!recordingSession) return;
-  try {
-    recordingSession.kill();
-    console.log("[SignBridge] Audio capture stopped.");
-  } catch (err) {
-    console.warn("[SignBridge] Error stopping capture:", err.message);
+  if (whisperProcess && whisperProcess.stdin && !whisperProcess.stdin.destroyed) {
+    try {
+      whisperProcess.stdin.write("STOP\n");
+    } catch (e) { }
   }
-  recordingSession = null;
-  audioAccumulator = Buffer.alloc(0);
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send("capture-status", { active: false, mode: "stopped" });
+  }
 }
 
 // ─── IPC handlers ─────────────────────────────────────────────────────────────
 ipcMain.on("start-capture", () => {
   if (!whisperProcess) startWhisperProcess();
-  startMainProcessCapture();
+  startMainProcessCapture("mic");
+});
+
+ipcMain.on("start-system-capture", () => {
+  if (!whisperProcess) startWhisperProcess();
+  startMainProcessCapture("system");
 });
 
 ipcMain.on("stop-capture", () => {
   stopMainProcessCapture();
-});
-
-ipcMain.on("audio-chunk", (_event, buffer) => {
-  sendChunkToWhisper(buffer);
 });
 
 ipcMain.handle("get-settings", () => ({

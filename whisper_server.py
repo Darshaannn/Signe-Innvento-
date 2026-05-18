@@ -39,7 +39,7 @@ except ImportError:
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 SAMPLE_RATE  = 16_000       # Hz — must match renderer audio capture
-MODEL_SIZE   = "tiny"       # "tiny"=fastest, "base"=balanced, "small"=accurate
+MODEL_SIZE   = "base"       # "tiny"=fastest, "base"=balanced, "small"=accurate
 DEVICE       = "cpu"        # "cpu" | "cuda" — change to "cuda" if GPU available
 COMPUTE      = "int8"       # "int8" is fastest on CPU; use "float16" for GPU
 CHUNK_SECS   = 1            # seconds of audio per transcription (lower = faster)
@@ -85,8 +85,8 @@ def transcribe_chunk(model: WhisperModel, audio: np.ndarray) -> dict:
     segments, info = model.transcribe(
         audio,
         language="en",          # force English — avoids language detection overhead
-        beam_size=1,            # greedy decoding — fastest, slightly less accurate
-        best_of=1,              # no candidates sampling needed
+        beam_size=5,            # multi-hypothesis beam search for much higher accuracy
+        best_of=5,              # candidates sampling
         temperature=0,          # deterministic, no temperature sampling
         vad_filter=True,        # skip silent regions
         condition_on_previous_text=False,  # no context carry-over = faster
